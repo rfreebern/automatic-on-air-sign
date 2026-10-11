@@ -36,22 +36,32 @@ property ON_BRIGHTNESS : -1
 -- section in README.md to calibrate this.
 property CAM_GREP : "VDCAssistant|VCA[0-9]"
 
+-- Optional: absolute path to a compiled mic-activity helper (see README).
+-- If the file exists it is used as the primary "on a call" signal; if not,
+-- the script falls back to camera detection + the UDP heuristic.
+property MIC_HELPER : "~/bin/wled-mic-helper"
+
+-- Fallback heuristic: process names of call apps whose live calls hold UDP
+-- media sockets (idle clients hold only TCP). Calibrate with the commands in
+-- README.md; narrow or clear this if you see false positives.
+property CALL_APPS_GREP : "zoom|teams|slack"
+
 -- ---------- MAIN LOOP ----------
 
 -- "idle" is called every time the returned number of seconds elapses.
 on idle
-	set camOn to my cameraInUse()
+	set callOn to my callActive()
 	set signOn to my wledIsOn()
 
-	if camOn and not signOn then
+	if callOn and not signOn then
 		my wledSetPower(true)
-	else if (not camOn) and signOn then
-		-- Only actually turn the sign off if the camera has stayed idle
+	else if (not callOn) and signOn then
+		-- Only actually turn the sign off if it has stayed idle
 		-- for OFF_DELAY_SECONDS in a row.
 		if OFF_DELAY_SECONDS is 0 then
 			my wledSetPower(false)
 		else
-			if my cameraIdleFor(OFF_DELAY_SECONDS) then
+			if my callIdleFor(OFF_DELAY_SECONDS) then
 				my wledSetPower(false)
 			end if
 		end if
@@ -60,7 +70,28 @@ on idle
 	return POLL_SECONDS
 end idle
 
--- ---------- CAMERA DETECTION ----------
+-- ---------- CALL / CAMERA DETECTION ----------
+
+-- True if we're "on air": any signal fires.
+--   1. mic helper (if compiled)  — catches audio-only calls in any app
+--   2. webcam in use             — catches camera-on activity of any app
+--   3. call app holding UDP media — catches known call apps with camera off
+on callActive()
+	if my micInUse() then return true
+	if my cameraInUse() then return true
+	if my callMediaActive() then return true
+	return false
+end callActive
+
+-- Uses the optional CoreAudio helper, if present.
+on micInUse()
+	try
+		set r to do shell script "test -x " & MIC_HELPER & " && " & MIC_HELPER & " 2>/dev/null"
+		return (r is "1")
+	on error
+		return false
+	end try
+end micInUse
 
 -- True if any process on the Mac is streaming from a webcam right now.
 -- macOS's lsof is setgid, so it can see other users' (and root's) open
@@ -74,15 +105,27 @@ on cameraInUse()
 	end try
 end cameraInUse
 
--- True if the camera has been idle continuously for N seconds.
-on cameraIdleFor(seconds)
+-- True if a known call app currently holds UDP media sockets (live call),
+-- while its idle client only uses TCP.
+on callMediaActive()
+	if CALL_APPS_GREP is "" then return false
+	try
+		do shell script "/usr/sbin/lsof -n -i UDP +c0 2>/dev/null | /usr/bin/grep -iE " & quoted form of CALL_APPS_GREP & " | /usr/bin/head -n 1"
+		return true
+	on error
+		return false
+	end try
+end callMediaActive
+
+-- True if all signals have been idle continuously for N seconds.
+on callIdleFor(seconds)
 	set start to current date
 	repeat
-		if my cameraInUse() then return false
+		if my callActive() then return false
 		if ((current date) - start) ≥ seconds then return true
 		delay 1
 	end repeat
-end cameraIdleFor
+end callIdleFor
 
 -- ---------- WLED CONTROL ----------
 

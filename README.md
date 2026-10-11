@@ -10,6 +10,7 @@ Two interchangeable implementations are included — pick one:
 |---|---|---|
 | `wled-cam.applescript` | Paste into Script Editor, save as an Application with "Stay Open" ticked | The dead-simple AppleScript route |
 | `wled-cam.sh` + `wled.cam.plist` | Background LaunchAgent started at login | "Set and forget" / no Dock icon |
+| `mic-helper.swift` | Optional compiled helper (see below) | Detects audio-only calls (camera off) |
 
 ## How it works
 
@@ -95,6 +96,62 @@ future macOS versions can shift details — calibrate once:
    curl -s -X POST -d '{"on":true}'  http://<wled-ip>/json/state
    curl -s -X POST -d '{"on":false}' http://<wled-ip>/json/state
    ```
+
+## Calls with the camera off (Teams, Slack huddles, Zoom, …)
+
+A call with the camera off produces no webcam signal, so the scripts stack
+three userspace signals — the sign turns on if **any** of them fires:
+
+1. **Microphone capture** (best signal, optional helper). Every call app
+   grabs the microphone, camera on or off. `mic-helper.swift` checks
+   CoreAudio's `kAudioDevicePropertyDeviceIsRunningSomewhere` on all
+   input devices — the same API that mic-indicator apps use — and needs no
+   special permissions. Build it once (no admin needed) **if** Xcode Command
+   Line Tools are already installed on the Mac:
+
+   ```bash
+   mkdir -p ~/bin
+   swiftc -O mic-helper.swift -o ~/bin/wled-mic-helper
+   ~/bin/wled-mic-helper        # test: 0 idle; 1 while a QuickTime audio recording runs
+   ```
+
+   If `~/bin/wled-mic-helper` exists, both scripts use it automatically as
+   the primary signal. If `swiftc` isn't available (CLT not installed, and
+   you can't install it without admin), the scripts skip it gracefully.
+
+2. **Webcam in use** — the `lsof` trick, unchanged.
+
+3. **Call app holding UDP media** — a heuristic: live calls in Zoom/Teams/
+   Slack keep UDP media sockets open, while idle clients use only TCP.
+   The scripts run `lsof -n -i UDP +c0` and match the process names in
+   `CALL_APPS_GREP` (default `zoom|teams|slack`). Calibrate it once:
+
+   ```bash
+   # app open but NOT in a call  → ideally no output
+   lsof -n -i UDP +c0 | grep -iE 'zoom|teams|slack'
+   # join a Teams call / Slack huddle with camera off → output should appear
+   ```
+
+   If your app emits UDP when idle (Chromium apps can use HTTP/3), narrow
+   `CALL_APPS_GREP` to the apps that behaved well in your test, or clear it
+   to disable the heuristic entirely.
+
+### Honest limitations of the call detection
+
+- **If the mic helper is built**, detection is excellent: any mic-capturing
+  app (Teams, Slack, Zoom, QuickTime, Voice Memos…) lights the sign. Note
+  that some apps keep the mic device open while *muted* — for an on-air sign
+  that's arguably the correct behavior, but it means mute ≠ sign off.
+- **Without the mic helper**, audio-only calls are only caught by the UDP
+  heuristic, which is app-dependent and worth calibrating. Camera-on calls
+  are always caught regardless.
+- **Window-title/UI-scripting was deliberately avoided**: reading other
+  apps' windows requires an Accessibility permission, and granting that in
+  System Settings needs an administrator password — which you don't have.
+- The mic helper may report input devices such as virtual/loopback drivers
+  (BlackHole, aggregate devices) as "in use" if some app holds them open.
+  If that causes false positives, tell me and I can add a transport-type
+  exclusion to the helper.
 
 ## Notes & limitations
 

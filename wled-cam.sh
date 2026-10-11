@@ -15,11 +15,28 @@
 
 WLED_IP="192.168.1.50"
 POLL_SECONDS=3
-OFF_DELAY=5                 # seconds camera must stay idle before turning sign off
+OFF_DELAY=5                 # seconds signals must stay idle before turning sign off
 CAM_GREP='VDCAssistant|VCA[0-9]'
+CALL_APPS_GREP='zoom|teams|slack'   # process-name filter for the UDP call heuristic (clear to disable)
+MIC_HELPER="$HOME/bin/wled-mic-helper"   # optional compiled helper, see README
 
 cam_in_use() {
     /usr/sbin/lsof -n 2>/dev/null | /usr/bin/grep -iqE "$CAM_GREP"
+}
+
+mic_in_use() {
+    [ -x "$MIC_HELPER" ] && "$MIC_HELPER" 2>/dev/null | /usr/bin/grep -q '^1$'
+}
+
+call_media_active() {
+    [ -n "$CALL_APPS_GREP" ] || return 1
+    /usr/sbin/lsof -n -i UDP +c0 2>/dev/null | /usr/bin/grep -iqE "$CALL_APPS_GREP"
+}
+
+on_air() {   # any signal counts: mic, camera, or a call app with live UDP media
+    mic_in_use && return 0
+    cam_in_use && return 0
+    call_media_active
 }
 
 wled_on() {
@@ -33,7 +50,7 @@ wled_set() {   # $1 = true|false, $2 = optional payload
 
 idle_count=0
 while true; do
-    if cam_in_use; then
+    if on_air; then
         idle_count=0
         if ! wled_on; then
             wled_set true
